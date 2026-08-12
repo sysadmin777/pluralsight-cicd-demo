@@ -2,9 +2,8 @@ version: 0.2
 
 # ============================================================================
 # DEPLOY BOUNDARY (Clip 2, slide 7)
-# A stored artifact becomes a running workload. Verification at the last
-# possible moment: we deploy the EXACT digest the build produced — an
-# intentional promotion, not a "latest" pull.
+# A stored artifact becomes a running workload. We deploy the EXACT digest
+# the build produced — an intentional promotion, never a "latest" pull.
 # ============================================================================
 
 env:
@@ -16,33 +15,53 @@ phases:
       - IMAGE_URI=$(python3 -c "import json;print(json.load(open('imageDetail.json'))['imageUri'])")
       - DIGEST=$(python3 -c "import json;print(json.load(open('imageDetail.json'))['imageDigest'])")
       - echo "==================================================="
-      - echo " PROMOTING BY IMMUTABLE DIGEST:"
-      - echo "   $IMAGE_URI"
+      - 'echo " PROMOTING BY IMMUTABLE DIGEST: $IMAGE_URI"'
       - echo "==================================================="
       - |
+        set -e
         if aws lambda get-function --function-name "$FUNCTION_NAME" > /dev/null 2>&1; then
-          echo "Function exists — updating code to new digest."
+          echo "--- Function exists: updating code to new digest"
           aws lambda update-function-code \
             --function-name "$FUNCTION_NAME" \
-            --image-uri "$IMAGE_URI" > /dev/null
+            --image-uri "$IMAGE_URI" \
+            --query 'CodeSha256' --output text
           aws lambda wait function-updated --function-name "$FUNCTION_NAME"
+          echo "--- Updating environment (digest marker + secret id)"
           aws lambda update-function-configuration \
             --function-name "$FUNCTION_NAME" \
-            --environment "Variables={API_KEY_SECRET_ID=$SECRET_ID,IMAGE_DIGEST=$DIGEST}" > /dev/null
+            --environment "Variables={API_KEY_SECRET_ID=$SECRET_ID,IMAGE_DIGEST=$DIGEST}" \
+            --query 'LastUpdateStatus' --output text
           aws lambda wait function-updated --function-name "$FUNCTION_NAME"
         else
-          echo "First deployment — creating function."
-          aws lambda create-function \
-            --function-name "$FUNCTION_NAME" \
-            --package-type Image \
-            --code ImageUri="$IMAGE_URI" \
-            --role "$LAMBDA_ROLE_ARN" \
-            --timeout 15 --memory-size 256 \
-            --environment "Variables={API_KEY_SECRET_ID=$SECRET_ID,IMAGE_DIGEST=$DIGEST}" > /dev/null
+          echo "--- First deployment: creating function"
+          # New IAM roles can take up to ~60s to become assumable by Lambda;
+          # retry create-function through that propagation window.
+          CREATED=""
+          for i in 1 2 3 4 5 6; do
+            if aws lambda create-function \
+                 --function-name "$FUNCTION_NAME" \
+                 --package-type Image \
+                 --code ImageUri="$IMAGE_URI" \
+                 --role "$LAMBDA_ROLE_ARN" \
+                 --timeout 15 --memory-size 256 \
+                 --environment "Variables={API_KEY_SECRET_ID=$SECRET_ID,IMAGE_DIGEST=$DIGEST}" \
+                 --query 'State' --output text; then
+              CREATED="yes"
+              break
+            fi
+            echo "create-function attempt $i failed (see error above); retrying in 15s..."
+            sleep 15
+          done
+          if [ -z "$CREATED" ]; then
+            echo "create-function failed after all retries — failing the stage."
+            exit 1
+          fi
           aws lambda wait function-active --function-name "$FUNCTION_NAME"
+          echo "--- Creating public function URL"
           aws lambda create-function-url-config \
             --function-name "$FUNCTION_NAME" \
-            --auth-type NONE > /dev/null
+            --auth-type NONE \
+            --query 'FunctionUrl' --output text
           aws lambda add-permission \
             --function-name "$FUNCTION_NAME" \
             --statement-id FunctionURLAllowPublicAccess \
@@ -52,6 +71,6 @@ phases:
         fi
       - URL=$(aws lambda get-function-url-config --function-name "$FUNCTION_NAME" --query FunctionUrl --output text)
       - echo "==================================================="
-      - echo " DEPLOYED. Running workload is digest $DIGEST"
+      - 'echo " DEPLOYED. Running workload is digest: $DIGEST"'
       - 'echo " Function URL: $URL"'
       - echo "==================================================="
