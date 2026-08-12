@@ -58,3 +58,5 @@ artifacts:
   files:
     - imageDetail.json
     - severity.json
+    # the Deploy stage reads its buildspec from this artifact
+    - buildspec-deploy.yml

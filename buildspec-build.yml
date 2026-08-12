@@ -83,3 +83,7 @@ artifacts:
   files:
     - imageDetail.json
     - sbom.spdx.json
+    # downstream stages use this artifact as their "source", so their
+    # buildspecs must travel with it
+    - buildspec-scan.yml
+    - buildspec-deploy.yml
