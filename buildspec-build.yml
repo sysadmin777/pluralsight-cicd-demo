@@ -19,11 +19,14 @@ phases:
       - echo " INSTALLING VERIFICATION TOOLING"
       - echo "==================================================="
       - pip install --quiet pip-audit pytest
-      # gitleaks — secret scanning
-      - curl -sSL https://github.com/gitleaks/gitleaks/releases/download/v8.18.4/gitleaks_8.18.4_linux_x64.tar.gz -o /tmp/gitleaks.tgz
+      # gitleaks — secret scanning (retry: GitHub's release CDN can drop connections)
+      - curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors https://github.com/gitleaks/gitleaks/releases/download/v8.18.4/gitleaks_8.18.4_linux_x64.tar.gz -o /tmp/gitleaks.tgz
       - tar -xzf /tmp/gitleaks.tgz -C /usr/local/bin gitleaks
+      - gitleaks version
       # syft — SBOM generation
-      - curl -sSL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
+      - curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors https://raw.githubusercontent.com/anchore/syft/main/install.sh -o /tmp/syft-install.sh
+      - sh /tmp/syft-install.sh -b /usr/local/bin
+      - syft version
 
   pre_build:
     commands:
