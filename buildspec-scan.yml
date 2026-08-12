@@ -1,0 +1,60 @@
+version: 0.2
+
+# ============================================================================
+# PRE-PRODUCTION SCAN GATE (Clip 3, slide 5)
+# Policy-as-code, evaluated against evidence the pipeline gathered:
+#   BLOCK on CRITICAL findings.
+#   WARN (record, don't block) on everything else — that channel is work
+#   we've chosen not to block on, not noise.
+# ============================================================================
+
+env:
+  shell: bash
+
+phases:
+  build:
+    commands:
+      - DIGEST=$(python3 -c "import json;print(json.load(open('imageDetail.json'))['imageDigest'])")
+      - echo "==================================================="
+      - echo " GATE 4 — IMAGE SCAN POLICY"
+      - echo " Artifact under evaluation (by digest):"
+      - echo "   $DIGEST"
+      - echo "==================================================="
+      # Wait for the scan-on-push to complete (basic or enhanced scanning)
+      - |
+        for i in $(seq 1 30); do
+          STATUS=$(aws ecr describe-image-scan-findings \
+            --repository-name "$ECR_REPO" \
+            --image-id imageDigest="$DIGEST" \
+            --query 'imageScanStatus.status' --output text 2>/dev/null || echo "PENDING")
+          echo "Scan status: $STATUS (attempt $i)"
+          if [ "$STATUS" = "COMPLETE" ] || [ "$STATUS" = "ACTIVE" ]; then break; fi
+          if [ "$i" = "30" ]; then echo "Scan never completed — failing closed."; exit 1; fi
+          sleep 10
+        done
+      - |
+        aws ecr describe-image-scan-findings \
+          --repository-name "$ECR_REPO" \
+          --image-id imageDigest="$DIGEST" \
+          --query 'imageScanFindings.findingSeverityCounts' --output json > severity.json
+        cat severity.json
+        CRITICAL=$(python3 -c "import json;print(json.load(open('severity.json')).get('CRITICAL',0))")
+        HIGH=$(python3 -c "import json;print(json.load(open('severity.json')).get('HIGH',0))")
+        echo "---------------------------------------------------"
+        echo " POLICY EVALUATION"
+        echo "   CRITICAL findings: $CRITICAL  -> gate BLOCKS if > 0"
+        echo "   HIGH findings:     $HIGH  -> guardrail WARNS (recorded)"
+        echo "---------------------------------------------------"
+        if [ "$CRITICAL" -gt 0 ]; then
+          echo "GATE RESULT: BLOCK. Release halted; artifact will not be promoted."
+          exit 1
+        fi
+        if [ "$HIGH" -gt 0 ]; then
+          echo "GUARDRAIL: $HIGH high-severity findings recorded for triage. Not blocking."
+        fi
+        echo "GATE RESULT: PASS. Artifact eligible for promotion."
+
+artifacts:
+  files:
+    - imageDetail.json
+    - severity.json

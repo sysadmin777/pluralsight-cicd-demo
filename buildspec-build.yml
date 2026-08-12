@@ -1,0 +1,82 @@
+version: 0.2
+
+# ============================================================================
+# BUILD STAGE — the build trust boundary (Clip 2, slide 5)
+# Untrusted in: source from the external repository.
+# Trusted out: an immutable, digest-referenced artifact in ECR + SBOM.
+# Gates here BLOCK. Guardrails here WARN. Banners make each visible on camera.
+# ============================================================================
+
+env:
+  shell: bash
+
+phases:
+  install:
+    runtime-versions:
+      python: 3.12
+    commands:
+      - echo "==================================================="
+      - echo " INSTALLING VERIFICATION TOOLING"
+      - echo "==================================================="
+      - pip install --quiet pip-audit pytest
+      # gitleaks — secret scanning
+      - curl -sSL https://github.com/gitleaks/gitleaks/releases/download/v8.18.4/gitleaks_8.18.4_linux_x64.tar.gz -o /tmp/gitleaks.tgz
+      - tar -xzf /tmp/gitleaks.tgz -C /usr/local/bin gitleaks
+      # syft — SBOM generation
+      - curl -sSL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
+
+  pre_build:
+    commands:
+      - echo "==================================================="
+      - echo " GATE 1 — SECRET SCAN (blocks: a leaked credential"
+      - echo " only gets worse downstream)"
+      - echo "==================================================="
+      - gitleaks detect --source . --no-banner --redact -v
+
+      - echo "==================================================="
+      - echo " GATE 2 — SOFTWARE COMPOSITION ANALYSIS"
+      - echo " (blocks on known-vulnerable pinned dependencies)"
+      - echo "==================================================="
+      - pip-audit -r app/requirements.txt --strict
+
+      - echo "==================================================="
+      - echo " GATE 3 — TESTS (run in the pipeline, not only"
+      - echo " pre-commit — environment resembles production)"
+      - echo "==================================================="
+      - cd app && python -m pytest -v && cd ..
+
+      - echo "All build-boundary gates PASSED. Proceeding to build."
+      - aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$ECR_REGISTRY"
+
+  build:
+    commands:
+      - echo "==================================================="
+      - echo " BUILDING ARTIFACT — clean, controlled environment"
+      - echo "==================================================="
+      - IMAGE_TAG="${CODEBUILD_RESOLVED_SOURCE_VERSION:0:12}"
+      - docker build -t "$ECR_REGISTRY/$ECR_REPO:$IMAGE_TAG" app/
+
+      - echo "==================================================="
+      - echo " GENERATING SBOM (security metadata for the artifact)"
+      - echo "==================================================="
+      - syft "$ECR_REGISTRY/$ECR_REPO:$IMAGE_TAG" -o spdx-json > sbom.spdx.json
+      - syft "$ECR_REGISTRY/$ECR_REPO:$IMAGE_TAG" -o table | head -30
+
+  post_build:
+    commands:
+      - echo "==================================================="
+      - echo " CROSSING THE ARTIFACT BOUNDARY"
+      - echo " Pushing to IMMUTABLE-tag registry. No 'latest'."
+      - echo "==================================================="
+      - docker push "$ECR_REGISTRY/$ECR_REPO:$IMAGE_TAG"
+      # Capture the digest — downstream stages reference the artifact by
+      # digest, never by mutable tag (Clip 2, slide 6).
+      - DIGEST=$(aws ecr describe-images --repository-name "$ECR_REPO" --image-ids imageTag="$IMAGE_TAG" --query 'imageDetails[0].imageDigest' --output text)
+      - echo "{\"imageTag\":\"$IMAGE_TAG\",\"imageDigest\":\"$DIGEST\",\"imageUri\":\"$ECR_REGISTRY/$ECR_REPO@$DIGEST\"}" > imageDetail.json
+      - cat imageDetail.json
+      - echo "Trusted output emitted. Handing off to the scan gate."
+
+artifacts:
+  files:
+    - imageDetail.json
+    - sbom.spdx.json
