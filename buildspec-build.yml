@@ -28,7 +28,7 @@ phases:
   pre_build:
     commands:
       - echo "==================================================="
-      - echo " GATE 1 — SECRET SCAN (blocks: a leaked credential"
+      - 'echo " GATE 1 — SECRET SCAN (blocks: a leaked credential"'
       - echo " only gets worse downstream)"
       - echo "==================================================="
       - gitleaks detect --source . --no-banner --redact -v

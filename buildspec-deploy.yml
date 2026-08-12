@@ -53,5 +53,5 @@ phases:
       - URL=$(aws lambda get-function-url-config --function-name "$FUNCTION_NAME" --query FunctionUrl --output text)
       - echo "==================================================="
       - echo " DEPLOYED. Running workload is digest $DIGEST"
-      - echo " Function URL: $URL"
+      - 'echo " Function URL: $URL"'
       - echo "==================================================="
