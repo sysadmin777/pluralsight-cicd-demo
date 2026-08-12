@@ -20,18 +20,20 @@ phases:
       - |
         set -e
         if aws lambda get-function --function-name "$FUNCTION_NAME" > /dev/null 2>&1; then
-          echo "--- Function exists: updating code to new digest"
+          echo "--- Function exists: waiting for it to be updatable"
+          aws lambda wait function-active-v2 --function-name "$FUNCTION_NAME"
+          echo "--- Updating code to new digest"
           aws lambda update-function-code \
             --function-name "$FUNCTION_NAME" \
             --image-uri "$IMAGE_URI" \
             --query 'CodeSha256' --output text
-          aws lambda wait function-updated --function-name "$FUNCTION_NAME"
+          aws lambda wait function-updated-v2 --function-name "$FUNCTION_NAME"
           echo "--- Updating environment (digest marker + secret id)"
           aws lambda update-function-configuration \
             --function-name "$FUNCTION_NAME" \
             --environment "Variables={API_KEY_SECRET_ID=$SECRET_ID,IMAGE_DIGEST=$DIGEST}" \
             --query 'LastUpdateStatus' --output text
-          aws lambda wait function-updated --function-name "$FUNCTION_NAME"
+          aws lambda wait function-updated-v2 --function-name "$FUNCTION_NAME"
         else
           echo "--- First deployment: creating function"
           # New IAM roles can take up to ~60s to become assumable by Lambda;
@@ -56,7 +58,12 @@ phases:
             echo "create-function failed after all retries — failing the stage."
             exit 1
           fi
-          aws lambda wait function-active --function-name "$FUNCTION_NAME"
+          aws lambda wait function-active-v2 --function-name "$FUNCTION_NAME"
+        fi
+      - |
+        set -e
+        # Idempotent: ensure the public URL exists regardless of which path ran
+        if ! aws lambda get-function-url-config --function-name "$FUNCTION_NAME" > /dev/null 2>&1; then
           echo "--- Creating public function URL"
           aws lambda create-function-url-config \
             --function-name "$FUNCTION_NAME" \
